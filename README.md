@@ -8,6 +8,17 @@
 com.coloros.phonemanager 17.1.6 · ColorOS 16 · Android 16 · RMX5200
 ```
 
+## 本工作副本：RMX5080 / 手机管家 17.3.10 适配
+
+版本调整为 **v2.1（versionCode 3）**，在保留 17.1.6 旧 Hook 的同时加入：
+
+- `AiVoiceDetectDCSUtils.uploadDetectInfo`
+- `AiVoiceDetectDCSUtils.uploadDetectInfo$default`
+- `AiVoiceDetectDCSUtils.uploadSwitches`
+- `TrackApi.track` 的全部重载（按 `20092` 与反诈事件名过滤）
+
+17.3.10 的新增目标已从 RMX5080 实际提取的 APK 中静态核实；当前适配版尚未在 LSPosed 环境中上机验证。开发构建产物为 `out/AntiFraudBlock-2.1.apk`。
+
 ---
 
 ## 为什么单独做模块，不并进 LuckyTool
@@ -144,7 +155,7 @@ OK   命中 1 次拦截
 ## 构建
 
 ```bash
-./build.sh          # -> out/AntiFraudBlock-2.0.apk
+./build.sh          # -> out/AntiFraudBlock-2.1.apk
 ```
 
 需要 `javac(11+)`、`aapt2`、`d8`、`zipalign`、`apksigner`、`android.jar(platform 34)`。
