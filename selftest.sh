@@ -55,10 +55,17 @@ while [ $i -lt 15 ]; do
   i=$((i+1))
 done
 
-echo "$LOG" | grep -q 'module loaded'            && ok "module loaded"                     || bad "未见 module loaded（模块没注入）"
-echo "$LOG" | grep -q 'AiDetectStatistics -> 9'  && ok "AiDetectStatistics 9 个方法已静默" || bad "AiDetectStatistics hook 缺失"
-echo "$LOG" | grep -q 'AiVoiceDetectDCSUtils -> 2' && ok "AiVoiceDetectDCSUtils 2 个方法已静默" || bad "DCS 上报 hook 缺失"
-echo "$LOG" | grep -q 'TrackApi.E -> 1 sink hooked' && ok "TrackApi.E 出口已挂" || bad "TrackApi.E 未挂"
+echo "$LOG" | grep -q 'module loaded' && ok "module loaded" || bad "未见 module loaded（模块没注入）"
+echo "$LOG" | grep -Eq 'AiDetectStatistics -> [1-9][0-9]* method' \
+  && ok "AiDetectStatistics 已静默（数量随手机管家版本变化）" || bad "AiDetectStatistics hook 缺失"
+echo "$LOG" | grep -Eq 'AiVoiceDetectDCSUtils -> [1-9][0-9]* method' \
+  && ok "AiVoiceDetectDCSUtils 已静默（含新旧上传方法）" || bad "DCS 上报 hook 缺失"
+if echo "$LOG" | grep -Eq 'TrackApi\.E -> [1-9][0-9]* sink hooked' \
+  || echo "$LOG" | grep -Eq 'TrackApi\.track -> [1-9][0-9]* sink hooked'; then
+  ok "TrackApi 出口已挂（E 或 track）"
+else
+  bad "TrackApi 出口未挂"
+fi
 echo "$LOG" | grep -q 'hook class failed' && bad "有类 hook 失败（版本不匹配？看下方原文）" && echo "$LOG" | grep 'hook class failed' | info
 [ "$FAILED" = "0" ] && info "全部 3 处 hook 就位"
 
@@ -77,7 +84,7 @@ if [ "${1:-}" = "--active" ]; then
   BLOCKED=$(logcat -d 2>/dev/null | grep 'AntiFraudBlock.*blocked track event' | grep -v 'LSPosedFramework' | wc -l)
   info "sink 层吞掉的 TrackApi 事件：$BLOCKED 条"
   if [ "$BLOCKED" = "0" ]; then
-    info "（为 0 说明反诈埋点在 AiDetectStatistics 层就被挡在源头，根本没走到 TrackApi.E，属正常）"
+    info "（为 0 说明反诈埋点在 AiDetectStatistics/DCS 层就被挡住，未走到 TrackApi.E/track，属正常）"
   fi
 fi
 

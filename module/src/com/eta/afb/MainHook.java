@@ -21,15 +21,18 @@ import java.util.Set;
  *
  * 作用域：com.coloros.phonemanager（含 :remote / :scan / :card 等子进程）
  *
- * 实测链路（本机 PhoneManager 17.1.6 / ColorOS 16，类名未混淆）：
+ * 兼容链路（PhoneManager 17.1.6 / 17.3.10）：
  *   1. com.oplus.phonemanager.aivoicecalldetect.utils.AiDetectStatistics
  *        反诈埋点封装：主开关点击、事件计数、推送触达、误报反馈、VOIP 白名单外应用
- *        最终都走 vf.l.r(ctx, "20092", <event>, map) -> xf.b.d(runnable) -> TrackApi.E
+ *        17.1.6 走 TrackApi.E；17.3.10 改走 TrackApi.track。
  *   2. com.oplus.phonemanager.aivoicecalldetect.utils.AiVoiceDetectDCSUtils
- *        m(int,String,boolean,String,String) / n(Context)
+ *        17.1.6：m(int,String,boolean,String,String) / n(Context)
+ *        17.3.10：uploadDetectInfo(...) / uploadDetectInfo$default(...) / uploadSwitches(Context)
  *        云端 DCS 上报：号码、包名、通话时长、检测时长、判定码 —— 最敏感的一跳
- *   3. com.oplus.nearx.track.TrackApi.E(String appId, String event, Map params)
- *        appId="20092"，全部手机管家遥测的最终出口
+ *   3. com.oplus.nearx.track.TrackApi
+ *        旧版 E(String appId, String event, Map params)
+ *        新版 track(String eventGroup, String eventId, ...)，实例来自 getInstance(20092L)
+ *        仅拦截第一个参数为 "20092" 且事件名命中反诈规则的调用。
  *
  * 保留不动（本地功能必须照常）：
  *   RiskWarningUtilsKt.insertFraudDetectSecurityEvent      -> 本地反诈记录落库
@@ -85,14 +88,18 @@ public class MainHook extends XposedModule {
         hookStaticVoid(cl,
                 "com.oplus.phonemanager.aivoicecalldetect.utils.AiDetectStatistics", null);
 
-        // 2) DCS 云端上报：只打 m(...) 与 n(Context)
+        // 2) DCS 云端上报：同时覆盖 17.1.6 的 m/n 与 17.3.10 的新方法。
+        // $default 是 Kotlin 默认参数桥，外部调用可能先进入它，必须一并覆盖。
         Set<String> dcs = new HashSet<>();
         dcs.add("m");
         dcs.add("n");
+        dcs.add("uploadDetectInfo");
+        dcs.add("uploadDetectInfo$default");
+        dcs.add("uploadSwitches");
         hookStaticVoid(cl,
                 "com.oplus.phonemanager.aivoicecalldetect.utils.AiVoiceDetectDCSUtils", dcs);
 
-        // 3) 最终出口兜底：TrackApi.E(appId="20092", 反诈事件, map) 直接吞
+        // 3) 最终出口兜底：同时覆盖旧版 TrackApi.E 与新版 TrackApi.track。
         hookTrackSink(cl);
 
         log("kept local: insertFraudDetectSecurityEvent / showRiskNotification / FraudRiskDialogActivity");
@@ -121,24 +128,36 @@ public class MainHook extends XposedModule {
         final String cls = "com.oplus.nearx.track.TrackApi";
         try {
             Class<?> c = Class.forName(cls, false, cl);
-            int hit = 0;
+            int legacyHit = 0;
+            int modernHit = 0;
             for (Method m : c.getDeclaredMethods()) {
-                if (!"E".equals(m.getName())) continue;
+                final boolean legacy = "E".equals(m.getName());
+                final boolean modern = "track".equals(m.getName());
+                if (!legacy && !modern) continue;
+
                 Class<?>[] ps = m.getParameterTypes();
-                if (ps.length != 3) continue;
+                if (ps.length < 2) continue;
                 if (ps[0] != String.class || ps[1] != String.class) continue;
-                final boolean nullResult = m.getReturnType() == void.class;
-                hookMethod(m, "sink TrackApi.E", nullResult ? null : false);
-                hit++;
+                if (m.getReturnType() != void.class) continue;
+                // 旧版保持原来的三参数签名；新版覆盖全部 track 重载。
+                if (legacy && ps.length != 3) continue;
+
+                hookMethod(m, "sink TrackApi." + m.getName(), null);
+                if (legacy) {
+                    legacyHit++;
+                } else {
+                    modernHit++;
+                }
             }
-            log("TrackApi.E -> " + hit + " sink hooked");
+            log("TrackApi.E -> " + legacyHit + " sink hooked");
+            log("TrackApi.track -> " + modernHit + " sink hooked");
         } catch (Throwable t) {
             log("hook TrackApi failed: " + t);
         }
     }
 
     /**
-     * @param always  true=无条件吞掉返回值；null=按事件名判定（仅 TrackApi.E 用）；false=不动
+     * @param always  true=无条件吞掉返回值；null=按事件名判定（TrackApi.E/track 用）；false=不动
      */
     private void hookMethod(Executable exe, final String label, final Boolean always) {
         try {
@@ -147,11 +166,11 @@ public class MainHook extends XposedModule {
                 public Object intercept(XposedInterface.Chain chain) throws Throwable {
                     if (sDisabled) return chain.proceed();
                     if (always == null) {
-                        // TrackApi.E 的判定分支
-                        Object appId = chain.getArg(0);
+                        // 旧版第一个参数是 appId；新版是 eventGroup，反诈链路两者均为 20092。
+                        Object group = chain.getArg(0);
                         Object ev = chain.getArg(1);
                         if (ev instanceof String
-                                && TRACK_APP_ID.equals(String.valueOf(appId))
+                                && TRACK_APP_ID.equals(String.valueOf(group))
                                 && isBlockedEvent((String) ev)) {
                             log("blocked track event: " + ev);
                             return null;
